@@ -1,0 +1,18 @@
+{
+  "name": "issue-img-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot: send images/text to chat and create a GitHub issue in a chosen repo",
+  "type": "module",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js"
+  },
+  "dependencies": {
+    "grammy": "^1.30.0",
+    "@octokit/rest": "^21.0.2",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
