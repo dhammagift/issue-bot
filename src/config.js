@@ -12,6 +12,7 @@ export const config = {
   githubToken: process.env.GITHUB_TOKEN,
   repos: parseList(process.env.GITHUB_REPOS),
   allowedUserIds: parseList(process.env.ALLOWED_USER_IDS).map(Number),
+  groqApiKey: process.env.GROQ_API_KEY,
 };
 
 if (!config.telegramToken) {

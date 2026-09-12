@@ -45,4 +45,15 @@ async function createIssue(fullName, { title, body }) {
   return data;
 }
 
-export { uploadImage, createIssue, splitRepo };
+async function addIssueComment(fullName, issueNumber, body) {
+  const { owner, repo } = splitRepo(fullName);
+  const { data } = await octokit.issues.createComment({
+    owner,
+    repo,
+    issue_number: issueNumber,
+    body,
+  });
+  return data;
+}
+
+export { uploadImage, createIssue, addIssueComment, splitRepo };
