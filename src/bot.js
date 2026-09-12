@@ -42,17 +42,17 @@ function isAllowed(ctx) {
 
 bot.use(async (ctx, next) => {
   if (!isAllowed(ctx)) {
-    await ctx.reply("Доступ запрещён.");
+    await ctx.reply("Access denied.");
     return;
   }
   await next();
 });
 
-const BTN_NEW = "🆕 Новый issue";
-const BTN_DONE = "✅ Готово";
-const BTN_STATUS = "📋 Статус";
-const BTN_CANCEL = "❌ Отмена";
-const BTN_ISSUES = "📂 Открыть issues";
+const BTN_NEW = "🆕 New issue";
+const BTN_DONE = "✅ Done";
+const BTN_STATUS = "📋 Status";
+const BTN_CANCEL = "❌ Cancel";
+const BTN_ISSUES = "📂 Open issues";
 
 const mainKeyboard = new Keyboard()
   .text(BTN_NEW).text(BTN_ISSUES).row()
@@ -69,7 +69,7 @@ function repoLinksKeyboard(suffix) {
 }
 
 function issuesHandler(ctx) {
-  return ctx.reply("Открыть issues репозитория:", { reply_markup: repoLinksKeyboard("/issues") });
+  return ctx.reply("Open a repo's issues:", { reply_markup: repoLinksKeyboard("/issues") });
 }
 
 function repoKeyboard(draft) {
@@ -78,7 +78,7 @@ function repoKeyboard(draft) {
     const mark = draft.selectedRepos.has(repo) ? "✅ " : "";
     keyboard.text(`${mark}${repo}`, `repo:${repo}`).row();
   }
-  keyboard.text("Дальше ▶", "confirm-repos");
+  keyboard.text("Next ▶", "confirm-repos");
   return keyboard;
 }
 
@@ -97,35 +97,35 @@ function startHandler(ctx) {
     const { repo, number } = decodeIssueRef(payload);
     const url = `https://github.com/${repo}/issues/${number}`;
     setLastIssue(ctx.from.id, { repo, number, url });
-    return ctx.reply(`Присылай фото — добавлю в ${repo}#${number}:\n${url}`);
+    return ctx.reply(`Send photos — I'll attach them to ${repo}#${number}:\n${url}`);
   }
 
   return ctx.reply(
-    "Привет! Я собираю текст и картинки в черновик issue и создаю его в GitHub.\n\n" +
-      `${BTN_NEW} — начать новый issue\n${BTN_ISSUES} — быстрые ссылки на issues репо\n` +
-      `${BTN_DONE} — создать issue из черновика\n${BTN_STATUS} — показать текущий черновик\n${BTN_CANCEL} — отменить черновик`,
+    "Hi! I collect text and images into an issue draft and create it on GitHub.\n\n" +
+      `${BTN_NEW} — start a new issue\n${BTN_ISSUES} — quick links to repo issues\n` +
+      `${BTN_DONE} — create the issue from the draft\n${BTN_STATUS} — show the current draft\n${BTN_CANCEL} — discard the draft`,
     { reply_markup: mainKeyboard }
   );
 }
 
 function cancelHandler(ctx) {
   clearDraft(ctx.chat.id);
-  return ctx.reply("Черновик отменён.");
+  return ctx.reply("Draft discarded.");
 }
 
 function statusHandler(ctx) {
   const draft = getDraft(ctx.chat.id);
-  if (!draft) return ctx.reply("Нет активного черновика. Жми «Новый issue».");
+  if (!draft) return ctx.reply("No active draft. Tap \"New issue\" to start.");
   return ctx.reply(
-    `Шаг: ${draft.step}\nРепозитории: ${[...draft.selectedRepos].join(", ") || "(нет)"}\n` +
-      `Заголовок: ${draft.title || "(нет)"}\nТекст: ${draft.text.length} сообщений\nКартинок: ${draft.images.length}`
+    `Step: ${draft.step}\nRepos: ${[...draft.selectedRepos].join(", ") || "(none)"}\n` +
+      `Title: ${draft.title || "(none)"}\nText: ${draft.text.length} message(s)\nImages: ${draft.images.length}`
   );
 }
 
 function newIssueHandler(ctx) {
   const draft = startDraft(ctx.chat.id);
   return ctx.reply(
-    "Выбери один или несколько репозиториев (можно для общих задач), потом жми «Дальше ▶»:",
+    "Pick one or more repos (pick several for a shared issue), then tap \"Next ▶\":",
     { reply_markup: repoKeyboard(draft) }
   );
 }
@@ -133,10 +133,10 @@ function newIssueHandler(ctx) {
 async function doneHandler(ctx) {
   const draft = getDraft(ctx.chat.id);
   if (!draft || draft.step !== STEP.BODY) {
-    return ctx.reply("Сейчас нечего завершать. Жми «Новый issue».");
+    return ctx.reply("Nothing to finish right now. Tap \"New issue\" to start.");
   }
 
-  await ctx.reply(`Создаю issue в: ${[...draft.selectedRepos].join(", ")}…`);
+  await ctx.reply(`Creating the issue in: ${[...draft.selectedRepos].join(", ")}…`);
 
   const results = [];
   const okRepos = [];
@@ -155,13 +155,13 @@ async function doneHandler(ctx) {
 
       const issue = await createIssue(repo, {
         title: draft.title,
-        body: bodyParts.join("\n\n") || "(без описания)",
+        body: bodyParts.join("\n\n") || "(no description)",
       });
       results.push(`${repo}: ${issue.html_url}`);
       okRepos.push(repo);
     } catch (err) {
       console.error(err);
-      results.push(`${repo}: ошибка — ${err.message}`);
+      results.push(`${repo}: error — ${err.message}`);
     }
   }
 
@@ -191,7 +191,7 @@ bot.on("callback_query:data", async (ctx) => {
   const data = ctx.callbackQuery.data;
   const draft = getDraft(ctx.chat.id);
   if (!draft || draft.step !== STEP.REPO) {
-    await ctx.answerCallbackQuery({ text: "Черновик не найден." });
+    await ctx.answerCallbackQuery({ text: "Draft not found." });
     return;
   }
 
@@ -210,7 +210,7 @@ bot.on("callback_query:data", async (ctx) => {
   if (data !== "confirm-repos") return;
 
   if (draft.selectedRepos.size === 0) {
-    await ctx.answerCallbackQuery({ text: "Выбери хотя бы один репозиторий." });
+    await ctx.answerCallbackQuery({ text: "Pick at least one repo." });
     return;
   }
 
@@ -218,7 +218,7 @@ bot.on("callback_query:data", async (ctx) => {
   draft.step = STEP.TITLE;
   await ctx.answerCallbackQuery();
   await ctx.editMessageText(
-    `Репозитории: ${[...draft.selectedRepos].join(", ")}\nТеперь отправь заголовок issue одним сообщением.`
+    `Repos: ${[...draft.selectedRepos].join(", ")}\nNow send the issue title as a single message.`
   );
 });
 
@@ -227,13 +227,13 @@ function handleTextInput(ctx, draft, text) {
     draft.title = text;
     draft.step = STEP.BODY;
     return ctx.reply(
-      `Заголовок сохранён. Теперь отправляй текст и/или картинки для описания issue.\nКогда закончишь — жми «${BTN_DONE}».`
+      `Title saved. Now send text and/or images for the issue body.\nWhen you're done — tap "${BTN_DONE}".`
     );
   }
 
   if (draft.step === STEP.BODY) {
     draft.text.push(text);
-    return ctx.reply("Добавлено к описанию.");
+    return ctx.reply("Added to the description.");
   }
 }
 
@@ -248,7 +248,7 @@ bot.on("message:voice", async (ctx) => {
   const draft = getDraft(ctx.chat.id);
   if (!draft) return;
   if (!config.groqApiKey) {
-    return ctx.reply("Распознавание голоса не настроено (нет GROQ_API_KEY).");
+    return ctx.reply("Voice transcription is not configured (no GROQ_API_KEY).");
   }
 
   const file = await ctx.api.getFile(ctx.message.voice.file_id);
@@ -258,12 +258,12 @@ bot.on("message:voice", async (ctx) => {
 
   try {
     const text = await transcribeVoice(buffer, "voice.ogg");
-    if (!text) return ctx.reply("Не удалось разобрать голосовое.");
-    await ctx.reply(`Распознано: ${text}`);
+    if (!text) return ctx.reply("Could not transcribe the voice message.");
+    await ctx.reply(`Transcribed: ${text}`);
     return handleTextInput(ctx, draft, text);
   } catch (err) {
     console.error(err);
-    return ctx.reply(`Ошибка распознавания: ${err.message}`);
+    return ctx.reply(`Transcription error: ${err.message}`);
   }
 });
 
@@ -291,10 +291,10 @@ bot.on("message:photo", async (ctx) => {
         .filter(Boolean)
         .join("\n\n");
       await addIssueComment(lastIssue.repo, lastIssue.number, commentBody);
-      return ctx.reply(`Добавлено в ${lastIssue.repo}#${lastIssue.number}: ${lastIssue.url}`);
+      return ctx.reply(`Added to ${lastIssue.repo}#${lastIssue.number}: ${lastIssue.url}`);
     } catch (err) {
       console.error(err);
-      return ctx.reply(`Не удалось добавить картинку: ${err.message}`);
+      return ctx.reply(`Could not add the image: ${err.message}`);
     }
   }
 
@@ -311,7 +311,7 @@ bot.on("message:photo", async (ctx) => {
     draft.text.push(ctx.message.caption);
   }
 
-  return ctx.reply(`Картинка добавлена (всего: ${draft.images.length}).`);
+  return ctx.reply(`Image added (total: ${draft.images.length}).`);
 });
 
 function splitTitleBody(text) {
@@ -342,7 +342,7 @@ bot.on("inline_query", async (ctx) => {
     InlineQueryResultBuilder.article(repo, repo, {
       description: title,
       reply_markup: new InlineKeyboard().url(repo, `https://github.com/${repo}`),
-    }).text(`${textPart}\n\n⏳ Создаю issue в ${repo}…`)
+    }).text(`${textPart}\n\n⏳ Creating the issue in ${repo}…`)
   );
   return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
 });
@@ -354,19 +354,19 @@ bot.on("chosen_inline_result", async (ctx) => {
   const { title, body } = splitTitleBody(textPart);
 
   try {
-    const issue = await createIssue(repo, { title, body: body || "(без описания)" });
+    const issue = await createIssue(repo, { title, body: body || "(no description)" });
     setLastIssue(ctx.chosenInlineResult.from.id, { repo, number: issue.number, url: issue.html_url });
     const startPayload = encodeIssueRef(repo, issue.number);
     const keyboard = new InlineKeyboard()
       .url(`Issue: ${repo}`, issue.html_url)
       .row()
-      .url("📷 Дослать фото боту", `https://t.me/${ctx.me.username}?start=${startPayload}`);
+      .url("📷 Send a photo to the bot", `https://t.me/${ctx.me.username}?start=${startPayload}`);
     await ctx.editMessageText(`${textPart}\n\n✅ ${repo}: ${issue.html_url}`, {
       reply_markup: keyboard,
     });
   } catch (err) {
     console.error(err);
-    await ctx.editMessageText(`${textPart}\n\n❌ ${repo}: ошибка — ${err.message}`);
+    await ctx.editMessageText(`${textPart}\n\n❌ ${repo}: error — ${err.message}`);
   }
 });
 
@@ -375,19 +375,19 @@ bot.catch((err) => {
 });
 
 await bot.api.setMyCommands([
-  { command: "newissue", description: "Начать новый issue" },
-  { command: "issues", description: "Открыть issues репозитория" },
-  { command: "done", description: "Создать issue из черновика" },
-  { command: "status", description: "Текущий черновик" },
-  { command: "cancel", description: "Отменить черновик" },
+  { command: "newissue", description: "Start a new issue" },
+  { command: "issues", description: "Open a repo's issues" },
+  { command: "done", description: "Create the issue from the draft" },
+  { command: "status", description: "Show the current draft" },
+  { command: "cancel", description: "Discard the draft" },
 ]);
 
 await bot.api.setMyDescription(
-  "Собирает текст, картинки и голосовые в чате и создаёт issue в выбранном GitHub-репозитории.\n\n" +
-    "Жми «Новый issue», выбери один или несколько репо, пришли заголовок и описание (текст/фото/голос) — бот сам создаст issue со ссылкой."
+  "Collects text, images and voice messages in chat and creates an issue in the repo(s) you pick on GitHub.\n\n" +
+    "Tap \"New issue\", pick one or more repos, send a title and description (text/photo/voice) — the bot creates the issue and gives you the link."
 );
 await bot.api.setMyShortDescription(
-  "Создаёт GitHub issue из текста, фото и голосовых сообщений в Telegram."
+  "Creates GitHub issues from Telegram text, photos, and voice messages."
 );
 
 bot.start();
