@@ -56,4 +56,12 @@ async function addIssueComment(fullName, issueNumber, body) {
   return data;
 }
 
-export { uploadImage, createIssue, addIssueComment, splitRepo };
+async function listRepos() {
+  const repos = await octokit.paginate(octokit.repos.listForAuthenticatedUser, {
+    per_page: 100,
+    affiliation: "owner,collaborator",
+  });
+  return repos.map((r) => r.full_name).sort();
+}
+
+export { uploadImage, createIssue, addIssueComment, listRepos, splitRepo };

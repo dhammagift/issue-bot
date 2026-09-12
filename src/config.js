@@ -21,6 +21,3 @@ if (!config.telegramToken) {
 if (!config.githubToken) {
   throw new Error("GITHUB_TOKEN is not set");
 }
-if (config.repos.length === 0) {
-  throw new Error("GITHUB_REPOS is not set (comma-separated owner/repo list)");
-}

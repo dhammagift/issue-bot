@@ -9,9 +9,17 @@ import {
   getLastIssue,
   STEP,
 } from "./session.js";
-import { uploadImage, createIssue, addIssueComment } from "./github.js";
+import { uploadImage, createIssue, addIssueComment, listRepos } from "./github.js";
 
 const bot = new Bot(config.telegramToken);
+
+if (config.repos.length === 0) {
+  config.repos = await listRepos();
+  console.log(`Auto-discovered ${config.repos.length} repos: ${config.repos.join(", ")}`);
+}
+if (config.repos.length === 0) {
+  throw new Error("No repos accessible with this GITHUB_TOKEN");
+}
 
 async function transcribeVoice(buffer, filename) {
   const form = new FormData();
