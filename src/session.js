@@ -6,7 +6,6 @@ const lastIssueByUser = new Map(); // userId -> { repo, number, url }, last issu
 
 const STEP = {
   REPO: "repo",
-  TITLE: "title",
   BODY: "body",
 };
 

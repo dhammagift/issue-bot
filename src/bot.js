@@ -57,8 +57,7 @@ const BTN_ISSUES = "📂 Open issues";
 const mainKeyboard = new Keyboard()
   .text(BTN_NEW).text(BTN_ISSUES).row()
   .text(BTN_DONE).text(BTN_STATUS).text(BTN_CANCEL)
-  .resized()
-  .persistent();
+  .resized();
 
 function repoLinksKeyboard(suffix) {
   const keyboard = new InlineKeyboard();
@@ -130,6 +129,15 @@ function newIssueHandler(ctx) {
   );
 }
 
+function defaultTitle(repo) {
+  const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+  return `${repo} issue ${stamp}`;
+}
+
+function doneInlineKeyboard() {
+  return new InlineKeyboard().text("✅ Done", "inline-done");
+}
+
 async function doneHandler(ctx) {
   const draft = getDraft(ctx.chat.id);
   if (!draft || draft.step !== STEP.BODY) {
@@ -153,8 +161,9 @@ async function doneHandler(ctx) {
         bodyParts.push("", ...imageUrls.map((u) => `![image](${u})`));
       }
 
+      const title = draft.title || defaultTitle(repo);
       const issue = await createIssue(repo, {
-        title: draft.title,
+        title,
         body: bodyParts.join("\n\n") || "(no description)",
       });
       results.push(`${repo}: ${issue.html_url}`);
@@ -189,6 +198,12 @@ bot.hears(BTN_ISSUES, issuesHandler);
 
 bot.on("callback_query:data", async (ctx) => {
   const data = ctx.callbackQuery.data;
+
+  if (data === "inline-done") {
+    await ctx.answerCallbackQuery();
+    return doneHandler(ctx);
+  }
+
   const draft = getDraft(ctx.chat.id);
   if (!draft || draft.step !== STEP.REPO) {
     await ctx.answerCallbackQuery({ text: "Draft not found." });
@@ -215,26 +230,24 @@ bot.on("callback_query:data", async (ctx) => {
   }
 
   rememberRepoSelection(ctx.chat.id, draft.selectedRepos);
-  draft.step = STEP.TITLE;
+  draft.step = STEP.BODY;
   await ctx.answerCallbackQuery();
   await ctx.editMessageText(
-    `Repos: ${[...draft.selectedRepos].join(", ")}\nNow send the issue title as a single message.`
+    `Repos: ${[...draft.selectedRepos].join(", ")}\n` +
+      "Now send text and/or images. The first line/sentence becomes the title.\n" +
+      `When you're done — tap "${BTN_DONE}".`
   );
 });
 
 function handleTextInput(ctx, draft, text) {
-  if (draft.step === STEP.TITLE) {
-    draft.title = text;
-    draft.step = STEP.BODY;
-    return ctx.reply(
-      `Title saved. Now send text and/or images for the issue body.\nWhen you're done — tap "${BTN_DONE}".`
-    );
-  }
-
-  if (draft.step === STEP.BODY) {
+  if (!draft.title) {
+    const { title, body } = splitTitleBody(text);
+    draft.title = title;
+    if (body) draft.text.push(body);
+  } else {
     draft.text.push(text);
-    return ctx.reply("Added to the description.");
   }
+  return ctx.reply("Added.", { reply_markup: doneInlineKeyboard() });
 }
 
 bot.on("message:text", (ctx) => {
@@ -308,10 +321,18 @@ bot.on("message:photo", async (ctx) => {
   draft.images.push({ buffer, filename: `${photo.file_unique_id}.${ext}` });
 
   if (ctx.message.caption) {
-    draft.text.push(ctx.message.caption);
+    if (!draft.title) {
+      const { title, body } = splitTitleBody(ctx.message.caption);
+      draft.title = title;
+      if (body) draft.text.push(body);
+    } else {
+      draft.text.push(ctx.message.caption);
+    }
   }
 
-  return ctx.reply(`Image added (total: ${draft.images.length}).`);
+  return ctx.reply(`Image added (total: ${draft.images.length}).`, {
+    reply_markup: doneInlineKeyboard(),
+  });
 });
 
 function splitTitleBody(text) {
