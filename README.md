@@ -1,4 +1,4 @@
-# issue-img bot
+# issue-bot bot
 
 Telegram-бот: собирает текст и картинки в чате и создаёт issue в выбранном GitHub-репозитории.
 
