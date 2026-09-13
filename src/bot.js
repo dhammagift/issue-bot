@@ -79,13 +79,16 @@ function issuesHandler(ctx) {
   return ctx.reply("Open a repo's issues:", { reply_markup: repoLinksKeyboard("/issues") });
 }
 
+// One tap on a repo picks it and closes the picker (owner: "Next" is only natural when picking
+// several). "Pick several" switches to checkboxes + "Next ▶" for a shared issue.
 function repoKeyboard(draft) {
   const keyboard = new InlineKeyboard();
   for (const repo of config.repos) {
     const mark = draft.selectedRepos.has(repo) ? "✅ " : "";
     keyboard.text(`${mark}${repo}`, `repo:${repo}`).row();
   }
-  keyboard.text("Next ▶", "confirm-repos");
+  if (draft.multiPick) keyboard.text("Next ▶", "confirm-repos");
+  else keyboard.text("Pick several…", "multi-repos");
   return keyboard;
 }
 
@@ -150,9 +153,10 @@ function changeRepoKeyboard() {
 
 function showRepoPicker(ctx, draft) {
   draft.step = STEP.REPO;
+  draft.multiPick = draft.selectedRepos.size > 1;
   return ctx.reply(
-    "Pick one or more repos (several for a shared issue), then tap \"Next ▶\". " +
-      "New issues keep going there until you change it.",
+    "Tap a repo — new issues keep going there until you change it. " +
+      "For one issue in several repos — \"Pick several…\".",
     { reply_markup: repoKeyboard(draft) }
   );
 }
@@ -197,9 +201,14 @@ function doneInlineKeyboard() {
 
 async function doneHandler(ctx) {
   const draft = getDraft(ctx.chat.id);
-  if (!draft || draft.step !== STEP.BODY) {
-    return ctx.reply("Nothing to finish right now. Tap \"New issue\" to start.");
+  // No step check: the repo picker can still be open ("Set repo" pressed, "Next" never tapped) while
+  // the draft already has text and attachments — Done used to answer "nothing to finish" (owner bug).
+  if (!draft) return ctx.reply("Nothing to send yet — send a message to start an issue.");
+  if (draft.selectedRepos.size === 0) return ctx.reply(NO_REPO_HINT);
+  if (!draft.title && draft.text.length === 0 && draft.files.length === 0) {
+    return ctx.reply("The draft is empty — send text, a photo, a video or a file first.");
   }
+  draft.step = STEP.BODY;
 
   await ctx.reply(`Creating the issue in: ${[...draft.selectedRepos].join(", ")}…`);
 
@@ -278,8 +287,25 @@ bot.on("callback_query:data", async (ctx) => {
   }
 
   const draft = getDraft(ctx.chat.id);
-  if (!draft || draft.step !== STEP.REPO) {
+  // Any step: content may already have been added while the picker was open.
+  if (!draft) {
     await ctx.answerCallbackQuery({ text: "Draft not found." });
+    return;
+  }
+
+  if (data === "multi-repos") {
+    draft.multiPick = true;
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageReplyMarkup({ reply_markup: repoKeyboard(draft) });
+    return;
+  }
+
+  if (data.startsWith("repo:") && !draft.multiPick) {
+    draft.selectedRepos = new Set([data.slice("repo:".length)]);
+    rememberRepoSelection(ctx.chat.id, draft.selectedRepos);
+    draft.step = STEP.BODY;
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(bodyPrompt(draft));
     return;
   }
 
