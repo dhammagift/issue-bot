@@ -5,6 +5,7 @@ import {
   startDraft,
   clearDraft,
   rememberRepoSelection,
+  getRememberedRepos,
   setLastIssue,
   getLastIssue,
   STEP,
@@ -49,13 +50,20 @@ bot.use(async (ctx, next) => {
 });
 
 const BTN_NEW = "🆕 New issue";
-const BTN_DONE = "✅ Done";
+const BTN_DONE = "✅ Press when done";
+const BTN_DONE_OLD = "✅ Done"; // still sent by keyboards clients show from before the rename
 const BTN_STATUS = "📋 Status";
 const BTN_CANCEL = "❌ Cancel";
 const BTN_ISSUES = "📂 Open issues";
+// "Set repo" replaced "New issue" on the keyboard (owner): an issue starts by itself from the first
+// message, so choosing the repo is the only thing left to do up front. BTN_NEW stays handled for
+// keyboards Telegram clients still show from before.
+const BTN_REPO = "📁 Set repo";
+
+const NO_REPO_HINT = `No repo chosen yet — tap "${BTN_REPO}".`;
 
 const mainKeyboard = new Keyboard()
-  .text(BTN_NEW).text(BTN_ISSUES).row()
+  .text(BTN_REPO).text(BTN_ISSUES).row()
   .text(BTN_DONE).text(BTN_STATUS).text(BTN_CANCEL)
   .resized();
 
@@ -101,7 +109,7 @@ function startHandler(ctx) {
 
   return ctx.reply(
     "Hi! I collect text and images into an issue draft and create it on GitHub.\n\n" +
-      `${BTN_NEW} — start a new issue\n${BTN_ISSUES} — quick links to repo issues\n` +
+      `${BTN_REPO} — choose the repo once, then just send messages\n${BTN_ISSUES} — quick links to repo issues\n` +
       `${BTN_DONE} — create the issue from the draft\n${BTN_STATUS} — show the current draft\n${BTN_CANCEL} — discard the draft`,
     { reply_markup: mainKeyboard }
   );
@@ -114,19 +122,68 @@ function cancelHandler(ctx) {
 
 function statusHandler(ctx) {
   const draft = getDraft(ctx.chat.id);
-  if (!draft) return ctx.reply("No active draft. Tap \"New issue\" to start.");
+  const remembered = getRememberedRepos(ctx.chat.id);
+  if (!draft) {
+    return ctx.reply(
+      remembered.length
+        ? `No active draft. New issues go to: ${remembered.join(", ")} — just send a message.`
+        : NO_REPO_HINT
+    );
+  }
   return ctx.reply(
     `Step: ${draft.step}\nRepos: ${[...draft.selectedRepos].join(", ") || "(none)"}\n` +
       `Title: ${draft.title || "(none)"}\nText: ${draft.text.length} message(s)\nImages: ${draft.images.length}`
   );
 }
 
-function newIssueHandler(ctx) {
-  const draft = startDraft(ctx.chat.id);
+function bodyPrompt(draft) {
+  return (
+    `📁 Repo: ${[...draft.selectedRepos].join(", ")}\n` +
+    "Send text, images or voice. The first line/sentence becomes the title.\n" +
+    `When you're done — tap "${BTN_DONE}". Another repo — "${BTN_REPO}".`
+  );
+}
+
+function changeRepoKeyboard() {
+  return new InlineKeyboard().text(BTN_REPO, "change-repos");
+}
+
+function showRepoPicker(ctx, draft) {
+  draft.step = STEP.REPO;
   return ctx.reply(
-    "Pick one or more repos (pick several for a shared issue), then tap \"Next ▶\":",
+    "Pick one or more repos (several for a shared issue), then tap \"Next ▶\". " +
+      "New issues keep going there until you change it.",
     { reply_markup: repoKeyboard(draft) }
   );
+}
+
+// The repo is chosen once and kept: a new issue starts right in it, the picker only shows up
+// when nothing is chosen yet or on "Repo" (owner: don't pick the repo before every ticket).
+function newIssueHandler(ctx) {
+  const draft = startDraft(ctx.chat.id);
+  if (draft.selectedRepos.size === 0) return showRepoPicker(ctx, draft);
+  draft.step = STEP.BODY;
+  return ctx.reply(`🆕 New issue\n${bodyPrompt(draft)}`, { reply_markup: changeRepoKeyboard() });
+}
+
+function changeRepoHandler(ctx) {
+  const draft = getDraft(ctx.chat.id) || startDraft(ctx.chat.id);
+  return showRepoPicker(ctx, draft);
+}
+
+// A message with no draft starts a new issue in the chosen repo right away.
+function draftForMessage(ctx) {
+  const existing = getDraft(ctx.chat.id);
+  if (existing) return { draft: existing, started: false };
+  if (getRememberedRepos(ctx.chat.id).length === 0) return { draft: null, started: false };
+  const draft = startDraft(ctx.chat.id);
+  draft.step = STEP.BODY;
+  return { draft, started: true };
+}
+
+function addedReply(draft, started, what) {
+  const repos = [...draft.selectedRepos].join(", ");
+  return `${started ? "🆕 New issue\n" : ""}${what} → ${repos}`;
 }
 
 function defaultTitle(repo) {
@@ -135,7 +192,7 @@ function defaultTitle(repo) {
 }
 
 function doneInlineKeyboard() {
-  return new InlineKeyboard().text("✅ Done", "inline-done");
+  return new InlineKeyboard().text(BTN_DONE, "inline-done");
 }
 
 async function doneHandler(ctx) {
@@ -181,6 +238,11 @@ async function doneHandler(ctx) {
     keyboard.url(`Issues: ${repo}`, `https://github.com/${repo}/issues`).row();
   }
   await ctx.reply(results.join("\n"), okRepos.length > 0 ? { reply_markup: keyboard } : undefined);
+  // Separate message (owner): the link above stays a clean "here is your issue".
+  await ctx.reply(
+    `The next issue will be created in ${[...draft.selectedRepos].join(", ")} — just send a message.`,
+    { reply_markup: changeRepoKeyboard() }
+  );
 }
 
 bot.command("start", startHandler);
@@ -189,9 +251,11 @@ bot.command("status", statusHandler);
 bot.command("newissue", newIssueHandler);
 bot.command("done", doneHandler);
 bot.command("issues", issuesHandler);
+bot.command("repo", changeRepoHandler);
 
 bot.hears(BTN_NEW, newIssueHandler);
-bot.hears(BTN_DONE, doneHandler);
+bot.hears(BTN_REPO, changeRepoHandler);
+bot.hears([BTN_DONE, BTN_DONE_OLD], doneHandler);
 bot.hears(BTN_STATUS, statusHandler);
 bot.hears(BTN_CANCEL, cancelHandler);
 bot.hears(BTN_ISSUES, issuesHandler);
@@ -202,6 +266,11 @@ bot.on("callback_query:data", async (ctx) => {
   if (data === "inline-done") {
     await ctx.answerCallbackQuery();
     return doneHandler(ctx);
+  }
+
+  if (data === "change-repos") {
+    await ctx.answerCallbackQuery();
+    return changeRepoHandler(ctx);
   }
 
   const draft = getDraft(ctx.chat.id);
@@ -232,14 +301,10 @@ bot.on("callback_query:data", async (ctx) => {
   rememberRepoSelection(ctx.chat.id, draft.selectedRepos);
   draft.step = STEP.BODY;
   await ctx.answerCallbackQuery();
-  await ctx.editMessageText(
-    `Repos: ${[...draft.selectedRepos].join(", ")}\n` +
-      "Now send text and/or images. The first line/sentence becomes the title.\n" +
-      `When you're done — tap "${BTN_DONE}".`
-  );
+  await ctx.editMessageText(bodyPrompt(draft));
 });
 
-function handleTextInput(ctx, draft, text) {
+function handleTextInput(ctx, draft, text, started) {
   if (!draft.title) {
     const { title, body } = splitTitleBody(text);
     draft.title = title;
@@ -247,19 +312,19 @@ function handleTextInput(ctx, draft, text) {
   } else {
     draft.text.push(text);
   }
-  return ctx.reply("Added.", { reply_markup: doneInlineKeyboard() });
+  return ctx.reply(addedReply(draft, started, "Added"), { reply_markup: doneInlineKeyboard() });
 }
 
 bot.on("message:text", (ctx) => {
   if (ctx.message.text.startsWith("/")) return;
-  const draft = getDraft(ctx.chat.id);
-  if (!draft) return;
-  return handleTextInput(ctx, draft, ctx.message.text);
+  const { draft, started } = draftForMessage(ctx);
+  if (!draft) return ctx.reply(NO_REPO_HINT);
+  return handleTextInput(ctx, draft, ctx.message.text, started);
 });
 
 bot.on("message:voice", async (ctx) => {
-  const draft = getDraft(ctx.chat.id);
-  if (!draft) return;
+  const { draft, started } = draftForMessage(ctx);
+  if (!draft) return ctx.reply(NO_REPO_HINT);
   if (!config.groqApiKey) {
     return ctx.reply("Voice transcription is not configured (no GROQ_API_KEY).");
   }
@@ -273,7 +338,7 @@ bot.on("message:voice", async (ctx) => {
     const text = await transcribeVoice(buffer, "voice.ogg");
     if (!text) return ctx.reply("Could not transcribe the voice message.");
     await ctx.reply(`Transcribed: ${text}`);
-    return handleTextInput(ctx, draft, text);
+    return handleTextInput(ctx, draft, text, started);
   } catch (err) {
     console.error(err);
     return ctx.reply(`Transcription error: ${err.message}`);
@@ -281,11 +346,14 @@ bot.on("message:voice", async (ctx) => {
 });
 
 bot.on("message:photo", async (ctx) => {
-  const draft = getDraft(ctx.chat.id);
+  // No draft: the photo goes to the last inline-mode issue if there is one (as before),
+  // otherwise it starts a new issue in the chosen repo, like text and voice do.
+  const lastIssue = getLastIssue(ctx.from.id);
+  const { draft, started } =
+    getDraft(ctx.chat.id) || !lastIssue ? draftForMessage(ctx) : { draft: null, started: false };
 
-  if (!draft || draft.step !== STEP.BODY) {
-    const lastIssue = getLastIssue(ctx.from.id);
-    if (!lastIssue) return;
+  if (!draft) {
+    if (!lastIssue) return ctx.reply(NO_REPO_HINT);
 
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     const file = await ctx.api.getFile(photo.file_id);
@@ -330,7 +398,7 @@ bot.on("message:photo", async (ctx) => {
     }
   }
 
-  return ctx.reply(`Image added (total: ${draft.images.length}).`, {
+  return ctx.reply(addedReply(draft, started, `Image added (total: ${draft.images.length})`), {
     reply_markup: doneInlineKeyboard(),
   });
 });
@@ -398,6 +466,7 @@ bot.catch((err) => {
 await bot.api.setMyCommands([
   { command: "newissue", description: "Start a new issue" },
   { command: "issues", description: "Open a repo's issues" },
+  { command: "repo", description: "Set the repo for new issues" },
   { command: "done", description: "Create the issue from the draft" },
   { command: "status", description: "Show the current draft" },
   { command: "cancel", description: "Discard the draft" },
@@ -405,7 +474,7 @@ await bot.api.setMyCommands([
 
 await bot.api.setMyDescription(
   "Collects text, images and voice messages in chat and creates an issue in the repo(s) you pick on GitHub.\n\n" +
-    "Tap \"New issue\", pick one or more repos, send a title and description (text/photo/voice) — the bot creates the issue and gives you the link."
+    "Pick a repo once — every new issue goes there until you change it with \"Set repo\". Send a title and description (text/photo/voice) — the bot creates the issue and gives you the link."
 );
 await bot.api.setMyShortDescription(
   "Creates GitHub issues from Telegram text, photos, and voice messages."
