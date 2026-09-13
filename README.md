@@ -1,15 +1,15 @@
 # issue-bot
 
-A Telegram bot that turns chat messages — text, photos, and voice notes — into GitHub issues, without leaving Telegram.
+A Telegram bot that turns chat messages — text, photos, videos, files and voice notes — into GitHub issues, without leaving Telegram.
 
 ## Features
 
-- **Guided draft flow.** Pick one or more repos first (the bot remembers your last selection so you don't re-pick every time), then send a title, followed by any mix of text, photos, and voice messages for the body. One tap creates the issue in every selected repo at once — handy for cross-repo bugs.
+- **Set the repo once.** Pick one or more repos with "Set repo" — the choice is saved (survives restarts) and every new issue goes there until you change it. Just send a title, then any mix of text, photos, videos, files and voice messages; "Press when done" creates the issue in every selected repo at once — handy for cross-repo bugs.
 - **Voice-to-text.** Voice messages are transcribed via the Groq API (free tier, Whisper large-v3-turbo) and dropped straight into the draft as text.
-- **Images become real GitHub content.** Photos are committed into each target repo under `issue-images/` and embedded in the issue body as Markdown images — no external image host involved.
+- **Attachments live in a separate media repo.** Photos, videos, GIFs, round videos and files sent as documents are committed to `MEDIA_REPO` (default `dhammagift/issue-media`), in a folder named after the issue's repo, so working repos don't grow. Images are embedded in the issue; videos and files are linked to their GitHub file page. Telegram lets bots download files up to 20 MB.
 - **Auto-discovers your repos.** If you don't hardcode a repo list, the bot lists every repository your `GITHUB_TOKEN` can see and lets you pick from those.
 - **Inline mode, from any chat.** Type `@your_bot some text /repo` in any chat (even ones the bot isn't in) to get live repo-name suggestions and create a quick text-only issue with one tap — the first sentence becomes the title, the rest becomes the body.
-- **Follow-up photos for inline issues.** An inline-created issue gets a "send a photo" button that deep-links back into a private chat with the bot; any photo you send there is uploaded and posted as a comment on that exact issue.
+- **Follow-up photos for inline issues.** An inline-created issue gets a "send a photo" button that deep-links back into a private chat with the bot; any photo, video or file you send there is uploaded and posted as a comment on that exact issue.
 - **Quick links.** A one-tap shortcut lists every repo's `/issues` page.
 - **Access control.** Restrict who can use the bot by Telegram user ID.
 - **Self-configuring bot profile.** Command list, bot description and short description are pushed to Telegram automatically on startup.
@@ -36,7 +36,8 @@ A Telegram bot that turns chat messages — text, photos, and voice notes — in
    | Variable | Required | Description |
    |---|---|---|
    | `TELEGRAM_BOT_TOKEN` | yes | From @BotFather |
-   | `GITHUB_TOKEN` | yes | Needs write access to Contents (for image uploads) and Issues on the target repos |
+   | `GITHUB_TOKEN` | yes | Needs Issues write access on the target repos and Contents write access on the media repo |
+   | `MEDIA_REPO` | no | `owner/repo` where attachments are committed. Default `dhammagift/issue-media` |
    | `GITHUB_REPOS` | no | Comma-separated `owner/repo` list. Leave empty to auto-discover every repo the token can access |
    | `ALLOWED_USER_IDS` | no | Comma-separated Telegram user IDs. Leave empty to allow anyone |
    | `GROQ_API_KEY` | no | Enables voice message transcription |
@@ -61,8 +62,8 @@ To use the `@your_bot text /repo` inline feature:
 ## Usage
 
 **Chat flow:**
-- 🆕 **New issue** — pick repo(s), send a title, then send text / photos / voice notes for the body
-- ✅ **Done** — creates the issue(s) and posts the links
+- 📁 **Set repo** — pick repo(s) once; after that just send a title, then text / photos / videos / files / voice notes
+- ✅ **Press when done** — creates the issue(s), posts the link, then says where the next issue will go
 - 📂 **Open issues** — quick links to each repo's issues page
 - 📋 **Status** / ❌ **Cancel** — inspect or discard the current draft
 

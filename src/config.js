@@ -13,6 +13,8 @@ export const config = {
   repos: parseList(process.env.GITHUB_REPOS),
   allowedUserIds: parseList(process.env.ALLOWED_USER_IDS).map(Number),
   groqApiKey: process.env.GROQ_API_KEY,
+  // Where photos, videos and files from issues are stored (see github.js uploadAttachment).
+  mediaRepo: process.env.MEDIA_REPO || "dhammagift/issue-media",
 };
 
 if (!config.telegramToken) {

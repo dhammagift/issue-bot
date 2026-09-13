@@ -33,7 +33,7 @@ function startDraft(chatId) {
     step: STEP.REPO,
     title: "",
     text: [],
-    images: [],
+    files: [], // { buffer, filename, kind: "image" | "video" | "file" }
     selectedRepos: new Set(remembered),
   };
   drafts.set(chatId, draft);

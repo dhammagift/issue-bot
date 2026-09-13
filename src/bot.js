@@ -10,7 +10,7 @@ import {
   getLastIssue,
   STEP,
 } from "./session.js";
-import { uploadImage, createIssue, addIssueComment, listRepos } from "./github.js";
+import { uploadAttachment, createIssue, addIssueComment, listRepos, splitRepo } from "./github.js";
 
 const bot = new Bot(config.telegramToken);
 
@@ -108,7 +108,7 @@ function startHandler(ctx) {
   }
 
   return ctx.reply(
-    "Hi! I collect text and images into an issue draft and create it on GitHub.\n\n" +
+    "Hi! I collect text, photos, videos and files into an issue draft and create it on GitHub.\n\n" +
       `${BTN_REPO} — choose the repo once, then just send messages\n${BTN_ISSUES} — quick links to repo issues\n` +
       `${BTN_DONE} — create the issue from the draft\n${BTN_STATUS} — show the current draft\n${BTN_CANCEL} — discard the draft`,
     { reply_markup: mainKeyboard }
@@ -132,14 +132,14 @@ function statusHandler(ctx) {
   }
   return ctx.reply(
     `Step: ${draft.step}\nRepos: ${[...draft.selectedRepos].join(", ") || "(none)"}\n` +
-      `Title: ${draft.title || "(none)"}\nText: ${draft.text.length} message(s)\nImages: ${draft.images.length}`
+      `Title: ${draft.title || "(none)"}\nText: ${draft.text.length} message(s)\nAttachments: ${draft.files.length}`
   );
 }
 
 function bodyPrompt(draft) {
   return (
     `📁 Repo: ${[...draft.selectedRepos].join(", ")}\n` +
-    "Send text, images or voice. The first line/sentence becomes the title.\n" +
+    "Send text, photos, videos, files or voice. The first line/sentence becomes the title.\n" +
     `When you're done — tap "${BTN_DONE}". Another repo — "${BTN_REPO}".`
   );
 }
@@ -203,20 +203,24 @@ async function doneHandler(ctx) {
 
   await ctx.reply(`Creating the issue in: ${[...draft.selectedRepos].join(", ")}…`);
 
+  // Attachments are uploaded once to the media repo and linked from every issue of this draft.
+  // On failure the draft is kept, so "Done" can simply be pressed again.
+  const folder = [...draft.selectedRepos].map((r) => splitRepo(r).repo).join("+");
+  const attachments = [];
+  try {
+    for (const f of draft.files) {
+      attachments.push(attachmentMarkdown(f, await uploadAttachment(folder, f.buffer, f.filename)));
+    }
+  } catch (err) {
+    console.error(err);
+    return ctx.reply(`Could not upload the attachments, the draft is kept: ${err.message}`);
+  }
+
   const results = [];
   const okRepos = [];
   for (const repo of draft.selectedRepos) {
     try {
-      const imageUrls = [];
-      for (const img of draft.images) {
-        const url = await uploadImage(repo, img.buffer, img.filename);
-        imageUrls.push(url);
-      }
-
-      const bodyParts = [...draft.text];
-      if (imageUrls.length > 0) {
-        bodyParts.push("", ...imageUrls.map((u) => `![image](${u})`));
-      }
+      const bodyParts = [...draft.text, ...attachments];
 
       const title = draft.title || defaultTitle(repo);
       const issue = await createIssue(repo, {
@@ -345,48 +349,75 @@ bot.on("message:voice", async (ctx) => {
   }
 });
 
-bot.on("message:photo", async (ctx) => {
-  // No draft: the photo goes to the last inline-mode issue if there is one (as before),
+const KIND_LABEL = { image: "Image", video: "Video", file: "File" };
+
+// Photo, video, GIF, round video or any file sent as a document -> what to download and how to
+// show it in the issue. Images sent "as a file" still render as images.
+function mediaOf(msg) {
+  if (msg.photo) {
+    const p = msg.photo[msg.photo.length - 1];
+    return { fileId: p.file_id, filename: `${p.file_unique_id}.jpg`, kind: "image" };
+  }
+  const video = msg.video || msg.animation || msg.video_note;
+  if (video) {
+    return { fileId: video.file_id, filename: video.file_name || `${video.file_unique_id}.mp4`, kind: "video" };
+  }
+  const d = msg.document;
+  const mime = d.mime_type || "";
+  const kind = mime.startsWith("image/") ? "image" : mime.startsWith("video/") ? "video" : "file";
+  return { fileId: d.file_id, filename: d.file_name || d.file_unique_id, kind };
+}
+
+// The Bot API refuses to hand out files over 20 MB — getFile throws "file is too big".
+async function downloadMedia(ctx, media) {
+  const file = await ctx.api.getFile(media.fileId);
+  const res = await fetch(`https://api.telegram.org/file/bot${config.telegramToken}/${file.file_path}`);
+  if (!res.ok) throw new Error(`Telegram file download failed: ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+// GitHub renders images from a raw link inline; videos and other files get a link to the file page
+// in the media repo, where GitHub shows a player / preview.
+function attachmentMarkdown(media, urls) {
+  if (media.kind === "image") return `![image](${urls.raw})`;
+  if (media.kind === "video") return `▶️ [Video: ${media.filename}](${urls.page})`;
+  return `📎 [${media.filename}](${urls.page})`;
+}
+
+bot.on(
+  ["message:photo", "message:video", "message:animation", "message:video_note", "message:document"],
+  async (ctx) => {
+  // No draft: the attachment goes to the last inline-mode issue if there is one (as before),
   // otherwise it starts a new issue in the chosen repo, like text and voice do.
   const lastIssue = getLastIssue(ctx.from.id);
   const { draft, started } =
     getDraft(ctx.chat.id) || !lastIssue ? draftForMessage(ctx) : { draft: null, started: false };
+  if (!draft && !lastIssue) return ctx.reply(NO_REPO_HINT);
+
+  const media = mediaOf(ctx.message);
+  let buffer;
+  try {
+    buffer = await downloadMedia(ctx, media);
+  } catch (err) {
+    console.error(err);
+    return ctx.reply(`Could not get the file from Telegram (bots can download up to 20 MB): ${err.message}`);
+  }
 
   if (!draft) {
-    if (!lastIssue) return ctx.reply(NO_REPO_HINT);
-
-    const photo = ctx.message.photo[ctx.message.photo.length - 1];
-    const file = await ctx.api.getFile(photo.file_id);
-    const tgUrl = `https://api.telegram.org/file/bot${config.telegramToken}/${file.file_path}`;
-    const res = await fetch(tgUrl);
-    const buffer = Buffer.from(await res.arrayBuffer());
-    const ext = file.file_path.split(".").pop() || "jpg";
-
     try {
-      const imageUrl = await uploadImage(
-        lastIssue.repo,
-        buffer,
-        `${photo.file_unique_id}.${ext}`
-      );
-      const commentBody = [ctx.message.caption, `![image](${imageUrl})`]
+      const urls = await uploadAttachment(splitRepo(lastIssue.repo).repo, buffer, media.filename);
+      const commentBody = [ctx.message.caption, attachmentMarkdown(media, urls)]
         .filter(Boolean)
         .join("\n\n");
       await addIssueComment(lastIssue.repo, lastIssue.number, commentBody);
       return ctx.reply(`Added to ${lastIssue.repo}#${lastIssue.number}: ${lastIssue.url}`);
     } catch (err) {
       console.error(err);
-      return ctx.reply(`Could not add the image: ${err.message}`);
+      return ctx.reply(`Could not add the ${media.kind}: ${err.message}`);
     }
   }
 
-  const photo = ctx.message.photo[ctx.message.photo.length - 1];
-  const file = await ctx.api.getFile(photo.file_id);
-  const url = `https://api.telegram.org/file/bot${config.telegramToken}/${file.file_path}`;
-  const res = await fetch(url);
-  const buffer = Buffer.from(await res.arrayBuffer());
-  const ext = file.file_path.split(".").pop() || "jpg";
-
-  draft.images.push({ buffer, filename: `${photo.file_unique_id}.${ext}` });
+  draft.files.push({ ...media, buffer });
 
   if (ctx.message.caption) {
     if (!draft.title) {
@@ -398,10 +429,12 @@ bot.on("message:photo", async (ctx) => {
     }
   }
 
-  return ctx.reply(addedReply(draft, started, `Image added (total: ${draft.images.length})`), {
-    reply_markup: doneInlineKeyboard(),
-  });
-});
+  return ctx.reply(
+    addedReply(draft, started, `${KIND_LABEL[media.kind]} added (attachments: ${draft.files.length})`),
+    { reply_markup: doneInlineKeyboard() }
+  );
+  }
+);
 
 function splitTitleBody(text) {
   const firstLine = text.split("\n")[0];
@@ -473,7 +506,7 @@ await bot.api.setMyCommands([
 ]);
 
 await bot.api.setMyDescription(
-  "Collects text, images and voice messages in chat and creates an issue in the repo(s) you pick on GitHub.\n\n" +
+  "Collects text, photos, videos, files and voice messages in chat and creates an issue in the repo(s) you pick on GitHub.\n\n" +
     "Pick a repo once — every new issue goes there until you change it with \"Set repo\". Send a title and description (text/photo/voice) — the bot creates the issue and gives you the link."
 );
 await bot.api.setMyShortDescription(
