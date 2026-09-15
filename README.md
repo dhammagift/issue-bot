@@ -56,7 +56,7 @@ The production instance runs on the dhamma.gift server as the pm2 process **`iss
    | `TELEGRAM_BOT_TOKEN` | yes | From @BotFather |
    | `GITHUB_TOKEN` | yes | Needs Issues write access on the target repos and Contents write access on the media repo |
    | `MEDIA_REPO` | no | `owner/repo` where attachments are committed. Default `dhammagift/issue-media` |
-   | `GITHUB_REPOS` | no | Comma-separated `owner/repo` list. Leave empty to auto-discover every repo the token can access |
+   | `GITHUB_REPOS` | no | Comma-separated `owner/repo` list. Leave empty (recommended) to auto-discover every repo the token can open issues in — read-only repos are left out, and the list is re-checked hourly, so granting the token a new repo is enough |
    | `ALLOWED_USER_IDS` | no | Comma-separated Telegram user IDs. Leave empty to allow anyone |
    | `GROQ_API_KEY` | no | Enables voice message transcription |
 

@@ -1,7 +1,27 @@
 import { Octokit } from "@octokit/rest";
 import { config } from "./config.js";
 
-const octokit = new Octokit({ auth: config.githubToken });
+// The server's connections to GitHub sometimes stall: a fresh TCP connect takes 11 s or never completes,
+// the next one goes through in 0.1 s. Node's fetch gives up connecting after 10 s, so a single stall
+// failed the whole "Done". Retrying only errors raised before the request was sent is safe for POSTs
+// too (nothing reached GitHub, no duplicate issues); anything after that is thrown as before.
+const RETRYABLE = new Set(["UND_ERR_CONNECT_TIMEOUT", "ECONNREFUSED", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH"]);
+const ATTEMPTS = 4;
+
+export async function fetchWithRetry(url, options) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fetch(url, options);
+    } catch (err) {
+      const code = err?.cause?.code || err?.code;
+      if (attempt >= ATTEMPTS || !RETRYABLE.has(code)) throw err;
+      console.warn(`GitHub ${code}, retry ${attempt}/${ATTEMPTS - 1}: ${url}`);
+      await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+    }
+  }
+}
+
+const octokit = new Octokit({ auth: config.githubToken, request: { fetch: fetchWithRetry } });
 
 function splitRepo(fullName) {
   const [owner, repo] = fullName.split("/");
@@ -62,12 +82,33 @@ async function addIssueComment(fullName, issueNumber, body) {
   return data;
 }
 
+// Repos the token can actually open issues in. A fine-grained token also lists repos it may only read,
+// and GitHub has no read-only way to ask what it may write, so each repo gets POST /issues with an empty
+// title: 422 (validation failed) = allowed, 403 = not. Nothing is ever created. Cached for an hour, so
+// a repo newly granted to the token shows up without editing .env or restarting.
+const REPO_CACHE_MS = 60 * 60 * 1000;
+let repoCache = { at: 0, repos: [] };
+
 async function listRepos() {
+  if (repoCache.repos.length && Date.now() - repoCache.at < REPO_CACHE_MS) return repoCache.repos;
   const repos = await octokit.paginate(octokit.repos.listForAuthenticatedUser, {
     per_page: 100,
     affiliation: "owner,collaborator",
   });
-  return repos.map((r) => r.full_name).sort();
+  const writable = await Promise.all(
+    repos
+      .filter((r) => !r.archived && r.has_issues)
+      .map(async (r) => {
+        try {
+          await octokit.request("POST /repos/{owner}/{repo}/issues", { owner: r.owner.login, repo: r.name, title: "" });
+        } catch (err) {
+          return err.status === 422 ? r.full_name : null;
+        }
+        return null;
+      })
+  );
+  repoCache = { at: Date.now(), repos: writable.filter(Boolean).sort() };
+  return repoCache.repos;
 }
 
 export { uploadAttachment, createIssue, addIssueComment, listRepos, splitRepo };

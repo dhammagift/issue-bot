@@ -17,6 +17,19 @@ const bot = new Bot(config.telegramToken);
 if (config.repos.length === 0) {
   config.repos = await listRepos();
   console.log(`Auto-discovered ${config.repos.length} repos: ${config.repos.join(", ")}`);
+  // Repos granted to (or taken from) the token later appear without a restart. A failed refresh keeps
+  // the previous list.
+  setInterval(async () => {
+    try {
+      const repos = await listRepos();
+      if (repos.length && repos.join() !== config.repos.join()) {
+        config.repos = repos;
+        console.log(`Repo list refreshed: ${repos.join(", ")}`);
+      }
+    } catch (err) {
+      console.warn(`Repo list refresh failed, keeping the old one: ${err.message}`);
+    }
+  }, 60 * 60 * 1000);
 }
 if (config.repos.length === 0) {
   throw new Error("No repos accessible with this GITHUB_TOKEN");
