@@ -42,7 +42,7 @@ The production instance runs on the dhamma.gift server as the pm2 process **`iss
    - **Metadata: Read** (added automatically).
 4. Clone and install:
    ```bash
-   git clone git@github.com:dhammagift/issue-img.git /var/www/issue_bot
+   git clone git@github.com:dhammagift/issue-bot.git /var/www/issue_bot
    cd /var/www/issue_bot
    npm ci
    ```
