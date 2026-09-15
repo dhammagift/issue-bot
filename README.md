@@ -21,17 +21,35 @@ A Telegram bot that turns chat messages — text, photos, videos, files and voic
 - A GitHub token with `repo` (or fine-grained: Contents + Issues read/write) access to the repos you want to file issues in
 - (Optional) A free [Groq API key](https://console.groq.com/keys) for voice transcription
 
-## Setup
+## Setup from scratch (Linux server)
 
-1. Clone and install:
+The production instance runs on the dhamma.gift server as the pm2 process **`issue-bot`** in
+`/var/www/issue_bot`. The steps below reproduce it on a clean machine.
+
+1. Node.js 18+ and pm2 (skip what is already installed; `node -v`, `pm2 -v`):
    ```bash
-   git clone <this-repo>
-   cd issue-bot
-   npm install
+   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+   source ~/.bashrc
+   nvm install 24
+   npm install -g pm2
    ```
-2. Copy the env template and fill it in:
+2. Create the bot in Telegram: [@BotFather](https://t.me/BotFather) → `/newbot` → copy the token.
+3. Create the GitHub token: Settings → Developer settings → Fine-grained tokens, with access to the
+   repos you file issues in plus the media repo (`dhammagift/issue-media`):
+   - **Issues: Read and write** on the issue repos;
+   - **Contents: Read and write** on the media repo — without it attachments fail with
+     `403 Resource not accessible by personal access token`;
+   - **Metadata: Read** (added automatically).
+4. Clone and install:
+   ```bash
+   git clone git@github.com:dhammagift/issue-img.git /var/www/issue_bot
+   cd /var/www/issue_bot
+   npm ci
+   ```
+5. Copy the env template, fill it in and keep it private:
    ```bash
    cp .env.example .env
+   chmod 600 .env
    ```
    | Variable | Required | Description |
    |---|---|---|
@@ -42,14 +60,35 @@ A Telegram bot that turns chat messages — text, photos, videos, files and voic
    | `ALLOWED_USER_IDS` | no | Comma-separated Telegram user IDs. Leave empty to allow anyone |
    | `GROQ_API_KEY` | no | Enables voice message transcription |
 
-3. Start it:
+6. Try it in the foreground first (`Bot started` in the output, then send `/start` to the bot; Ctrl+C to stop):
    ```bash
    npm start
    ```
-   For production, run it under a process manager, e.g. [pm2](https://pm2.keymetrics.io/):
+7. Run it under pm2 and make it survive reboots:
    ```bash
-   pm2 start src/bot.js --name issue-bot
+   pm2 start src/bot.js --name issue-bot --cwd /var/www/issue_bot
+   pm2 save
+   pm2 startup    # once per server: prints a command that installs the pm2 systemd unit, run it
    ```
+8. Check:
+   ```bash
+   pm2 status issue-bot                      # online, restarts not growing
+   pm2 logs issue-bot --lines 50 --nostream  # "Bot started", no errors
+   ```
+
+Only one copy may run per bot token: a second instance (another server, a forgotten `npm start`)
+makes Telegram reject polling with `409 Conflict`.
+
+### Everyday operations
+
+```bash
+pm2 restart issue-bot                         # after editing .env
+cd /var/www/issue_bot && git pull && npm ci && pm2 restart issue-bot   # update
+pm2 stop issue-bot                            # pause
+pm2 delete issue-bot && pm2 save              # remove from pm2 for good
+```
+
+Renaming the pm2 process: `pm2 delete <old>`, then step 7 with the new `--name`, then `pm2 save`.
 
 ### Enabling inline mode (optional, one-time, via @BotFather)
 
