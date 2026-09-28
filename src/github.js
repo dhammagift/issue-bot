@@ -82,6 +82,13 @@ async function addIssueComment(fullName, issueNumber, body) {
   return data;
 }
 
+// Latest open issues (pull requests left out) for the "Add to issue" picker.
+async function listOpenIssues(fullName, count = 10) {
+  const { owner, repo } = splitRepo(fullName);
+  const { data } = await octokit.issues.listForRepo({ owner, repo, state: "open", per_page: count + 5 });
+  return data.filter((i) => !i.pull_request).slice(0, count);
+}
+
 // Repos the token can actually open issues in. A fine-grained token also lists repos it may only read,
 // and GitHub has no read-only way to ask what it may write, so each repo gets POST /issues with an empty
 // title: 422 (validation failed) = allowed, 403 = not. Nothing is ever created. Cached for an hour, so
@@ -111,4 +118,4 @@ async function listRepos() {
   return repoCache.repos;
 }
 
-export { uploadAttachment, createIssue, addIssueComment, listRepos, splitRepo };
+export { uploadAttachment, createIssue, addIssueComment, listOpenIssues, listRepos, splitRepo };

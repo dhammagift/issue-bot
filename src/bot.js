@@ -10,7 +10,7 @@ import {
   getLastIssue,
   STEP,
 } from "./session.js";
-import { uploadAttachment, createIssue, addIssueComment, listRepos, splitRepo } from "./github.js";
+import { uploadAttachment, createIssue, addIssueComment, listOpenIssues, listRepos, splitRepo } from "./github.js";
 
 const bot = new Bot(config.telegramToken);
 
@@ -72,11 +72,12 @@ const BTN_ISSUES = "📂 Open issues";
 // message, so choosing the repo is the only thing left to do up front. BTN_NEW stays handled for
 // keyboards Telegram clients still show from before.
 const BTN_REPO = "📁 Set repo";
+const BTN_ADD = "➕ Add to issue";
 
 const NO_REPO_HINT = `No repo chosen yet — tap "${BTN_REPO}".`;
 
 const mainKeyboard = new Keyboard()
-  .text(BTN_REPO).text(BTN_ISSUES).row()
+  .text(BTN_REPO).text(BTN_ISSUES).text(BTN_ADD).row()
   .text(BTN_DONE).text(BTN_STATUS).text(BTN_CANCEL)
   .resized();
 
@@ -114,6 +115,115 @@ function decodeIssueRef(payload) {
   return { repo, number: Number(numStr) };
 }
 
+// "Add to issue" mode: the draft gets a target, and "Done" posts it as one comment on that issue
+// instead of creating a new one.
+const ISSUE_URL_RE = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)/g;
+
+function issueUrl(repo, number) {
+  return `https://github.com/${repo}/issues/${number}`;
+}
+
+// "owner/repo#12", "repo#12", "#12" / "12" (in the one remembered repo) or an issue URL.
+function parseIssueRef(text, chatId) {
+  const url = [...text.matchAll(ISSUE_URL_RE)][0];
+  if (url) return { repo: url[1], number: Number(url[2]) };
+  const m = text.trim().match(/^(?:([\w.-]+(?:\/[\w.-]+)?)(?:\s*#|\s+))?#?(\d+)$/);
+  if (!m) return null;
+  let repo = m[1];
+  if (!repo) {
+    const remembered = getRememberedRepos(chatId);
+    if (remembered.length !== 1) return null;
+    repo = remembered[0];
+  } else if (!repo.includes("/")) {
+    repo = config.repos.find((r) => splitRepo(r).repo.toLowerCase() === repo.toLowerCase());
+    if (!repo) return null;
+  }
+  return { repo, number: Number(m[2]) };
+}
+
+function draftHasContent(draft) {
+  return Boolean(draft && (draft.title || draft.text.length || draft.files.length));
+}
+
+// Returns an error text instead of silently dropping a draft that already has content.
+function startComment(ctx, repo, number) {
+  const current = getDraft(ctx.chat.id);
+  if (current?.target?.repo === repo && current.target.number === number) return null;
+  if (draftHasContent(current)) {
+    return `There is an unfinished draft — tap "${BTN_DONE}" or "${BTN_CANCEL}" first.`;
+  }
+  if (!config.repos.includes(repo)) return `No write access to ${repo}.`;
+  const draft = startDraft(ctx.chat.id);
+  draft.step = STEP.BODY;
+  draft.target = { repo, number, url: issueUrl(repo, number) };
+  return null;
+}
+
+function commentPrompt(target) {
+  return (
+    `➕ Adding to ${target.repo}#${target.number}\n${target.url}\n` +
+    `Send text, photos, videos, files or voice, then tap "${BTN_DONE}" — it goes in as one comment.`
+  );
+}
+
+async function enterCommentMode(ctx, repo, number) {
+  const error = startComment(ctx, repo, number);
+  if (error) return ctx.reply(error);
+  return ctx.reply(commentPrompt(getDraft(ctx.chat.id).target));
+}
+
+// A reply to a bot message that links exactly one issue adds the reply (and what follows) to that issue.
+function commentTargetFromReply(ctx) {
+  const replied = ctx.message?.reply_to_message;
+  if (!replied || replied.from?.id !== ctx.me.id) return null;
+  const urls = [...(replied.text || replied.caption || "").matchAll(ISSUE_URL_RE)];
+  const unique = new Set(urls.map((u) => u[0]));
+  if (unique.size !== 1) return null;
+  return { repo: urls[0][1], number: Number(urls[0][2]) };
+}
+
+// Returns true when the reply could not be turned into a comment and the user was told why.
+async function applyReplyTarget(ctx) {
+  const ref = commentTargetFromReply(ctx);
+  if (!ref) return false;
+  const error = startComment(ctx, ref.repo, ref.number);
+  if (error) {
+    await ctx.reply(error);
+    return true;
+  }
+  return false;
+}
+
+function addIssueHandler(ctx, arg) {
+  const ref = arg ? parseIssueRef(arg, ctx.chat.id) : null;
+  if (ref) return enterCommentMode(ctx, ref.repo, ref.number);
+  if (arg) return ctx.reply("Could not read the issue. Use a link, owner/repo#123 or repo#123.");
+  const remembered = getRememberedRepos(ctx.chat.id);
+  if (remembered.length === 1) return showIssuePicker(ctx, remembered[0]);
+  const keyboard = new InlineKeyboard();
+  for (const repo of config.repos) keyboard.text(repo, `addrepo:${repo}`).row();
+  return ctx.reply("Which repo is the issue in?", { reply_markup: keyboard });
+}
+
+async function showIssuePicker(ctx, repo) {
+  let issues;
+  try {
+    issues = await listOpenIssues(repo);
+  } catch (err) {
+    console.error(err);
+    return ctx.reply(`Could not list issues of ${repo}: ${err.message}`);
+  }
+  const keyboard = new InlineKeyboard();
+  for (const i of issues) {
+    keyboard.text(`#${i.number} ${i.title}`.slice(0, 60), `add:${repo}#${i.number}`).row();
+  }
+  keyboard.text("Other repo…", "addrepos");
+  const text = issues.length
+    ? `Open issues in ${repo} — tap one to add to it. Or send /add with a link or number.`
+    : `No open issues in ${repo}.`;
+  return ctx.reply(text, { reply_markup: keyboard });
+}
+
 function startHandler(ctx) {
   const payload = ctx.match;
   if (payload) {
@@ -126,6 +236,7 @@ function startHandler(ctx) {
   return ctx.reply(
     "Hi! I collect text, photos, videos and files into an issue draft and create it on GitHub.\n\n" +
       `${BTN_REPO} — choose the repo once, then just send messages\n${BTN_ISSUES} — quick links to repo issues\n` +
+      `${BTN_ADD} — add to an existing issue (or reply to a bot message with an issue link, or /add repo#123)\n` +
       `${BTN_DONE} — create the issue from the draft\n${BTN_STATUS} — show the current draft\n${BTN_CANCEL} — discard the draft`,
     { reply_markup: mainKeyboard }
   );
@@ -144,6 +255,12 @@ function statusHandler(ctx) {
       remembered.length
         ? `No active draft. New issues go to: ${remembered.join(", ")} — just send a message.`
         : NO_REPO_HINT
+    );
+  }
+  if (draft.target) {
+    return ctx.reply(
+      `Adding to: ${draft.target.repo}#${draft.target.number}\n${draft.target.url}\n` +
+        `Text: ${draft.text.length} message(s)\nAttachments: ${draft.files.length}`
     );
   }
   return ctx.reply(
@@ -199,6 +316,7 @@ function draftForMessage(ctx) {
 }
 
 function addedReply(draft, started, what) {
+  if (draft.target) return `${what} → ${draft.target.repo}#${draft.target.number}`;
   const repos = [...draft.selectedRepos].join(", ");
   return `${started ? "🆕 New issue\n" : ""}${what} → ${repos}`;
 }
@@ -217,6 +335,7 @@ async function doneHandler(ctx) {
   // No step check: the repo picker can still be open ("Set repo" pressed, "Next" never tapped) while
   // the draft already has text and attachments — Done used to answer "nothing to finish" (owner bug).
   if (!draft) return ctx.reply("Nothing to send yet — send a message to start an issue.");
+  if (draft.target) return commentDoneHandler(ctx, draft);
   if (draft.selectedRepos.size === 0) return ctx.reply(NO_REPO_HINT);
   if (!draft.title && draft.text.length === 0 && draft.files.length === 0) {
     return ctx.reply("The draft is empty — send text, a photo, a video or a file first.");
@@ -240,6 +359,7 @@ async function doneHandler(ctx) {
 
   const results = [];
   const okRepos = [];
+  const created = [];
   for (const repo of draft.selectedRepos) {
     try {
       const bodyParts = [...draft.text, ...attachments];
@@ -251,6 +371,7 @@ async function doneHandler(ctx) {
       });
       results.push(`${repo}: ${issue.html_url}`);
       okRepos.push(repo);
+      created.push({ repo, number: issue.number });
     } catch (err) {
       console.error(err);
       results.push(`${repo}: error — ${err.message}`);
@@ -263,6 +384,9 @@ async function doneHandler(ctx) {
   for (const repo of okRepos) {
     keyboard.url(`Issues: ${repo}`, `https://github.com/${repo}/issues`).row();
   }
+  for (const { repo, number } of created) {
+    keyboard.text(`➕ Add to ${splitRepo(repo).repo}#${number}`, `add:${repo}#${number}`).row();
+  }
   await ctx.reply(results.join("\n"), okRepos.length > 0 ? { reply_markup: keyboard } : undefined);
   // Separate message (owner): the link above stays a clean "here is your issue".
   await ctx.reply(
@@ -271,7 +395,30 @@ async function doneHandler(ctx) {
   );
 }
 
+// On failure the draft is kept, so "Done" can simply be pressed again.
+async function commentDoneHandler(ctx, draft) {
+  const { repo, number, url } = draft.target;
+  if (!draftHasContent(draft)) {
+    return ctx.reply("Nothing to add yet — send text, a photo, a video, a file or voice first.");
+  }
+  const parts = [...draft.text];
+  try {
+    for (const f of draft.files) {
+      parts.push(attachmentMarkdown(f, await uploadAttachment(splitRepo(repo).repo, f.buffer, f.filename)));
+    }
+    await addIssueComment(repo, number, parts.join("\n\n"));
+  } catch (err) {
+    console.error(err);
+    return ctx.reply(`Could not add the comment, the draft is kept: ${err.message}`);
+  }
+  clearDraft(ctx.chat.id);
+  return ctx.reply(`✅ Added to ${repo}#${number}: ${url}`, {
+    reply_markup: new InlineKeyboard().text(`➕ Add more to #${number}`, `add:${repo}#${number}`),
+  });
+}
+
 bot.command("start", startHandler);
+bot.command("add", (ctx) => addIssueHandler(ctx, ctx.match));
 bot.command("cancel", cancelHandler);
 bot.command("status", statusHandler);
 bot.command("newissue", newIssueHandler);
@@ -285,9 +432,28 @@ bot.hears([BTN_DONE, BTN_DONE_OLD], doneHandler);
 bot.hears(BTN_STATUS, statusHandler);
 bot.hears(BTN_CANCEL, cancelHandler);
 bot.hears(BTN_ISSUES, issuesHandler);
+bot.hears(BTN_ADD, (ctx) => addIssueHandler(ctx, ""));
 
 bot.on("callback_query:data", async (ctx) => {
   const data = ctx.callbackQuery.data;
+
+  if (data.startsWith("add:")) {
+    await ctx.answerCallbackQuery();
+    const ref = data.slice("add:".length).split("#");
+    return enterCommentMode(ctx, ref[0], Number(ref[1]));
+  }
+
+  if (data.startsWith("addrepo:")) {
+    await ctx.answerCallbackQuery();
+    return showIssuePicker(ctx, data.slice("addrepo:".length));
+  }
+
+  if (data === "addrepos") {
+    await ctx.answerCallbackQuery();
+    const keyboard = new InlineKeyboard();
+    for (const repo of config.repos) keyboard.text(repo, `addrepo:${repo}`).row();
+    return ctx.reply("Which repo is the issue in?", { reply_markup: keyboard });
+  }
 
   if (data === "inline-done") {
     await ctx.answerCallbackQuery();
@@ -348,7 +514,9 @@ bot.on("callback_query:data", async (ctx) => {
 });
 
 function handleTextInput(ctx, draft, text, started) {
-  if (!draft.title) {
+  if (draft.target) {
+    draft.text.push(text);
+  } else if (!draft.title) {
     const { title, body } = splitTitleBody(text);
     draft.title = title;
     if (body) draft.text.push(body);
@@ -358,14 +526,19 @@ function handleTextInput(ctx, draft, text, started) {
   return ctx.reply(addedReply(draft, started, "Added"), { reply_markup: doneInlineKeyboard() });
 }
 
-bot.on("message:text", (ctx) => {
+bot.on("message:text", async (ctx) => {
   if (ctx.message.text.startsWith("/")) return;
+  if (await applyReplyTarget(ctx)) return;
+  // A bare issue link with no draft in progress means "add to this issue".
+  const bare = ctx.message.text.trim().match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)\/?$/);
+  if (bare && !draftHasContent(getDraft(ctx.chat.id))) return enterCommentMode(ctx, bare[1], Number(bare[2]));
   const { draft, started } = draftForMessage(ctx);
   if (!draft) return ctx.reply(NO_REPO_HINT);
   return handleTextInput(ctx, draft, ctx.message.text, started);
 });
 
 bot.on("message:voice", async (ctx) => {
+  if (await applyReplyTarget(ctx)) return;
   const { draft, started } = draftForMessage(ctx);
   if (!draft) return ctx.reply(NO_REPO_HINT);
   if (!config.groqApiKey) {
@@ -426,6 +599,7 @@ function attachmentMarkdown(media, urls) {
 bot.on(
   ["message:photo", "message:video", "message:animation", "message:video_note", "message:document"],
   async (ctx) => {
+  if (await applyReplyTarget(ctx)) return;
   // No draft: the attachment goes to the last inline-mode issue if there is one (as before),
   // otherwise it starts a new issue in the chosen repo, like text and voice do.
   const lastIssue = getLastIssue(ctx.from.id);
@@ -459,7 +633,9 @@ bot.on(
   draft.files.push({ ...media, buffer });
 
   if (ctx.message.caption) {
-    if (!draft.title) {
+    if (draft.target) {
+      draft.text.push(ctx.message.caption);
+    } else if (!draft.title) {
       const { title, body } = splitTitleBody(ctx.message.caption);
       draft.title = title;
       if (body) draft.text.push(body);
@@ -539,6 +715,7 @@ await bot.api.setMyCommands([
   { command: "newissue", description: "Start a new issue" },
   { command: "issues", description: "Open a repo's issues" },
   { command: "repo", description: "Set the repo for new issues" },
+  { command: "add", description: "Add to an existing issue: /add repo#123 or a link" },
   { command: "done", description: "Create the issue from the draft" },
   { command: "status", description: "Show the current draft" },
   { command: "cancel", description: "Discard the draft" },
