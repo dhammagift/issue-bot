@@ -5,6 +5,7 @@ A Telegram bot that turns chat messages — text, photos, videos, files and voic
 ## Features
 
 - **Set the repo once.** Pick one or more repos with "Set repo" — the choice is saved (survives restarts) and every new issue goes there until you change it. Just send a title, then any mix of text, photos, videos, files and voice messages; "Press when done" creates the issue in every selected repo at once — handy for cross-repo bugs.
+- **Trello too.** With `TRELLO_KEY`, `TRELLO_TOKEN` and `TRELLO_BOARD` set, the board's lists appear in "Set repo" next to the repos (marked 📋). A draft sent to a list becomes a card: first line = card name, the rest = description, photos/videos/files attached to the card itself. Lists and repos can be picked together ("Pick several…"). "Add to issue" and inline mode stay GitHub-only.
 - **Voice-to-text.** Voice messages are transcribed via the Groq API (free tier, Whisper large-v3-turbo) and dropped straight into the draft as text.
 - **Attachments live in a separate media repo.** Photos, videos, GIFs, round videos and files sent as documents are committed to `MEDIA_REPO` (default `dhammagift/issue-media`), in a folder named after the issue's repo, so working repos don't grow. Images are embedded in the issue; videos and files are linked to their GitHub file page. Telegram lets bots download files up to 20 MB.
 - **Auto-discovers your repos.** If you don't hardcode a repo list, the bot lists every repository your `GITHUB_TOKEN` can see and lets you pick from those.

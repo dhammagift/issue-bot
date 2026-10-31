@@ -15,6 +15,11 @@ export const config = {
   groqApiKey: process.env.GROQ_API_KEY,
   // Where photos, videos and files from issues are stored (see github.js uploadAttachment).
   mediaRepo: process.env.MEDIA_REPO || "dhammagift/issue-media",
+  // Optional Trello board: its lists become targets next to the repos (see trello.js).
+  trelloKey: process.env.TRELLO_KEY,
+  trelloToken: process.env.TRELLO_TOKEN,
+  trelloBoard: process.env.TRELLO_BOARD,
+  trelloLabel: process.env.TRELLO_LABEL_ID,
 };
 
 if (!config.telegramToken) {

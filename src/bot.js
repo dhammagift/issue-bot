@@ -11,6 +11,7 @@ import {
   STEP,
 } from "./session.js";
 import { uploadAttachment, createIssue, addIssueComment, listOpenIssues, listRepos, splitRepo } from "./github.js";
+import { trelloEnabled, listTrelloLists, cachedTrelloLists, isTrelloTarget, trelloTarget, listName, createCard, attachToCard } from "./trello.js";
 
 const bot = new Bot(config.telegramToken);
 
@@ -34,6 +35,17 @@ if (config.repos.length === 0) {
 if (config.repos.length === 0) {
   throw new Error("No repos accessible with this GITHUB_TOKEN");
 }
+if (trelloEnabled()) {
+  try {
+    console.log(`Trello lists: ${(await listTrelloLists()).map((l) => l.name).join(", ")}`);
+  } catch (err) {
+    console.warn(`Trello lists not loaded, only GitHub repos are offered: ${err.message}`);
+  }
+}
+
+// A target is a GitHub repo ("owner/repo") or a Trello list ("trello:<listId>").
+const targetName = (t) => (isTrelloTarget(t) ? `📋 ${listName(t)}` : t);
+const targetNames = (targets) => [...targets].map(targetName).join(", ");
 
 async function transcribeVoice(buffer, filename) {
   const form = new FormData();
@@ -97,9 +109,10 @@ function issuesHandler(ctx) {
 // several). "Pick several" switches to checkboxes + "Next ▶" for a shared issue.
 function repoKeyboard(draft) {
   const keyboard = new InlineKeyboard();
-  for (const repo of config.repos) {
-    const mark = draft.selectedRepos.has(repo) ? "✅ " : "";
-    keyboard.text(`${mark}${repo}`, `repo:${repo}`).row();
+  const targets = [...config.repos, ...cachedTrelloLists().map((l) => trelloTarget(l.id))];
+  for (const target of targets) {
+    const mark = draft.selectedRepos.has(target) ? "✅ " : "";
+    keyboard.text(`${mark}${targetName(target)}`, `repo:${target}`).row();
   }
   if (draft.multiPick) keyboard.text("Next ▶", "confirm-repos");
   else keyboard.text("Pick several…", "multi-repos");
@@ -131,7 +144,7 @@ function parseIssueRef(text, chatId) {
   if (!m) return null;
   let repo = m[1];
   if (!repo) {
-    const remembered = getRememberedRepos(chatId);
+    const remembered = getRememberedRepos(chatId).filter((t) => !isTrelloTarget(t));
     if (remembered.length !== 1) return null;
     repo = remembered[0];
   } else if (!repo.includes("/")) {
@@ -198,7 +211,7 @@ function addIssueHandler(ctx, arg) {
   const ref = arg ? parseIssueRef(arg, ctx.chat.id) : null;
   if (ref) return enterCommentMode(ctx, ref.repo, ref.number);
   if (arg) return ctx.reply("Could not read the issue. Use a link, owner/repo#123 or repo#123.");
-  const remembered = getRememberedRepos(ctx.chat.id);
+  const remembered = getRememberedRepos(ctx.chat.id).filter((t) => !isTrelloTarget(t));
   if (remembered.length === 1) return showIssuePicker(ctx, remembered[0]);
   const keyboard = new InlineKeyboard();
   for (const repo of config.repos) keyboard.text(repo, `addrepo:${repo}`).row();
@@ -253,7 +266,7 @@ function statusHandler(ctx) {
   if (!draft) {
     return ctx.reply(
       remembered.length
-        ? `No active draft. New issues go to: ${remembered.join(", ")} — just send a message.`
+        ? `No active draft. New issues go to: ${targetNames(remembered)} — just send a message.`
         : NO_REPO_HINT
     );
   }
@@ -264,14 +277,14 @@ function statusHandler(ctx) {
     );
   }
   return ctx.reply(
-    `Step: ${draft.step}\nRepos: ${[...draft.selectedRepos].join(", ") || "(none)"}\n` +
+    `Step: ${draft.step}\nRepos: ${targetNames(draft.selectedRepos) || "(none)"}\n` +
       `Title: ${draft.title || "(none)"}\nText: ${draft.text.length} message(s)\nAttachments: ${draft.files.length}`
   );
 }
 
 function bodyPrompt(draft) {
   return (
-    `📁 Repo: ${[...draft.selectedRepos].join(", ")}\n` +
+    `📁 Repo: ${targetNames(draft.selectedRepos)}\n` +
     "Send text, photos, videos, files or voice. The first line/sentence becomes the title.\n" +
     `When you're done — tap "${BTN_DONE}". Another repo — "${BTN_REPO}".`
   );
@@ -281,12 +294,13 @@ function changeRepoKeyboard() {
   return new InlineKeyboard().text(BTN_REPO, "change-repos");
 }
 
-function showRepoPicker(ctx, draft) {
+async function showRepoPicker(ctx, draft) {
+  if (trelloEnabled()) await listTrelloLists().catch((err) => console.warn(`Trello lists: ${err.message}`));
   draft.step = STEP.REPO;
   draft.multiPick = draft.selectedRepos.size > 1;
   return ctx.reply(
-    "Tap a repo — new issues keep going there until you change it. " +
-      "For one issue in several repos — \"Pick several…\".",
+    "Tap a repo or a Trello list (📋) — new issues keep going there until you change it. " +
+      "For one issue in several places — \"Pick several…\".",
     { reply_markup: repoKeyboard(draft) }
   );
 }
@@ -317,8 +331,7 @@ function draftForMessage(ctx) {
 
 function addedReply(draft, started, what) {
   if (draft.target) return `${what} → ${draft.target.repo}#${draft.target.number}`;
-  const repos = [...draft.selectedRepos].join(", ");
-  return `${started ? "🆕 New issue\n" : ""}${what} → ${repos}`;
+  return `${started ? "🆕 New issue\n" : ""}${what} → ${targetNames(draft.selectedRepos)}`;
 }
 
 function defaultTitle(repo) {
@@ -342,14 +355,17 @@ async function doneHandler(ctx) {
   }
   draft.step = STEP.BODY;
 
-  await ctx.reply(`Creating the issue in: ${[...draft.selectedRepos].join(", ")}…`);
+  await ctx.reply(`Creating the issue in: ${targetNames(draft.selectedRepos)}…`);
 
-  // Attachments are uploaded once to the media repo and linked from every issue of this draft.
-  // On failure the draft is kept, so "Done" can simply be pressed again.
-  const folder = [...draft.selectedRepos].map((r) => splitRepo(r).repo).join("+");
+  const ghRepos = [...draft.selectedRepos].filter((t) => !isTrelloTarget(t));
+  const trelloLists = [...draft.selectedRepos].filter(isTrelloTarget);
+
+  // Attachments are uploaded once to the media repo and linked from every issue of this draft (Trello cards
+  // get the files themselves). On failure the draft is kept, so "Done" can simply be pressed again.
+  const folder = ghRepos.map((r) => splitRepo(r).repo).join("+");
   const attachments = [];
   try {
-    for (const f of draft.files) {
+    for (const f of ghRepos.length ? draft.files : []) {
       attachments.push(attachmentMarkdown(f, await uploadAttachment(folder, f.buffer, f.filename)));
     }
   } catch (err) {
@@ -360,7 +376,7 @@ async function doneHandler(ctx) {
   const results = [];
   const okRepos = [];
   const created = [];
-  for (const repo of draft.selectedRepos) {
+  for (const repo of ghRepos) {
     try {
       const bodyParts = [...draft.text, ...attachments];
 
@@ -377,6 +393,30 @@ async function doneHandler(ctx) {
       results.push(`${repo}: error — ${err.message}`);
     }
   }
+  const cards = [];
+  for (const list of trelloLists) {
+    const name = `📋 ${listName(list)}`;
+    try {
+      const card = await createCard(list, {
+        name: draft.title || defaultTitle(listName(list)),
+        desc: draft.text.join("\n\n"),
+      });
+      const failed = [];
+      for (const f of draft.files) {
+        try {
+          await attachToCard(card.id, f.buffer, f.filename);
+        } catch (err) {
+          console.error(err);
+          failed.push(f.filename);
+        }
+      }
+      results.push(`${name}: ${card.shortUrl}${failed.length ? ` (not attached: ${failed.join(", ")})` : ""}`);
+      cards.push({ name, url: card.shortUrl });
+    } catch (err) {
+      console.error(err);
+      results.push(`${name}: error — ${err.message}`);
+    }
+  }
 
   clearDraft(ctx.chat.id);
 
@@ -387,10 +427,11 @@ async function doneHandler(ctx) {
   for (const { repo, number } of created) {
     keyboard.text(`➕ Add to ${splitRepo(repo).repo}#${number}`, `add:${repo}#${number}`).row();
   }
-  await ctx.reply(results.join("\n"), okRepos.length > 0 ? { reply_markup: keyboard } : undefined);
+  for (const { name, url } of cards) keyboard.url(`Card: ${name}`, url).row();
+  await ctx.reply(results.join("\n"), okRepos.length + cards.length > 0 ? { reply_markup: keyboard } : undefined);
   // Separate message (owner): the link above stays a clean "here is your issue".
   await ctx.reply(
-    `The next issue will be created in ${[...draft.selectedRepos].join(", ")} — just send a message.`,
+    `The next issue will be created in ${targetNames(draft.selectedRepos)} — just send a message.`,
     { reply_markup: changeRepoKeyboard() }
   );
 }
@@ -722,7 +763,7 @@ await bot.api.setMyCommands([
 ]);
 
 await bot.api.setMyDescription(
-  "Collects text, photos, videos, files and voice messages in chat and creates an issue in the repo(s) you pick on GitHub.\n\n" +
+  "Collects text, photos, videos, files and voice messages in chat and creates an issue in the repo(s) you pick on GitHub, or a card in a Trello list.\n\n" +
     "Pick a repo once — every new issue goes there until you change it with \"Set repo\". Send a title and description (text/photo/voice) — the bot creates the issue and gives you the link."
 );
 await bot.api.setMyShortDescription(
