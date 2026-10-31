@@ -21,13 +21,14 @@ async function call(method, path, body) {
 
 const enabled = () => Boolean(config.trelloKey && config.trelloToken && config.trelloBoard);
 
-// Open lists of the board, cached for an hour like the repo list.
+// Open lists of the board. Cached for an hour; the picker asks with fresh=true, so a list added on the board
+// shows up the next time "Set repo" is opened (owner: "чтобы сразу").
 const LIST_CACHE_MS = 60 * 60 * 1000;
 let listCache = { at: 0, lists: [] };
 
-async function listTrelloLists() {
+async function listTrelloLists(fresh = false) {
   if (!enabled()) return [];
-  if (listCache.lists.length && Date.now() - listCache.at < LIST_CACHE_MS) return listCache.lists;
+  if (!fresh && listCache.lists.length && Date.now() - listCache.at < LIST_CACHE_MS) return listCache.lists;
   const lists = await call("GET", `/boards/${encodeURIComponent(config.trelloBoard)}/lists?filter=open&fields=name`);
   listCache = { at: Date.now(), lists: lists.map((l) => ({ id: l.id, name: l.name })) };
   return listCache.lists;

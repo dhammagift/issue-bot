@@ -295,7 +295,7 @@ function changeRepoKeyboard() {
 }
 
 async function showRepoPicker(ctx, draft) {
-  if (trelloEnabled()) await listTrelloLists().catch((err) => console.warn(`Trello lists: ${err.message}`));
+  if (trelloEnabled()) await listTrelloLists(true).catch((err) => console.warn(`Trello lists: ${err.message}`));
   draft.step = STEP.REPO;
   draft.multiPick = draft.selectedRepos.size > 1;
   return ctx.reply(
