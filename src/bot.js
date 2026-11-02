@@ -47,6 +47,20 @@ if (trelloEnabled()) {
 const targetName = (t) => (isTrelloTarget(t) ? `📋 ${listName(t)}` : t);
 const targetNames = (targets) => [...targets].map(targetName).join(", ");
 
+const TG_MESSAGE_MAX = 4000;   // Telegram's limit is 4096
+const TITLE_MAX = 200;
+const TRELLO_DESC_MAX = 16000;   // Trello's limit is 16384
+const GITHUB_BODY_MAX = 60000;   // GitHub's limit is 65536
+const FULL_TEXT_FILE = "full-text.txt";
+// A text over a target's limit: its start, and the whole text to attach as a file (null when it fits)
+function fitText(text, max) {
+  if (text.length <= max) return { text, full: null };
+  return {
+    text: `${text.slice(0, max - 100)}\n\n… (too long for here, the whole text is in ${FULL_TEXT_FILE})`,
+    full: Buffer.from(text, "utf8"),
+  };
+}
+
 async function transcribeVoice(buffer, filename) {
   const form = new FormData();
   form.append("file", new Blob([buffer]), filename);
@@ -376,9 +390,12 @@ async function doneHandler(ctx) {
   const results = [];
   const okRepos = [];
   const created = [];
+  const failedTargets = [];
   for (const repo of ghRepos) {
     try {
-      const bodyParts = [...draft.text, ...attachments];
+      const fit = fitText(draft.text.join("\n\n"), GITHUB_BODY_MAX);
+      const bodyParts = [fit.text, ...attachments].filter(Boolean);
+      if (fit.full) bodyParts.push(attachmentMarkdown({ filename: FULL_TEXT_FILE }, await uploadAttachment(folder, fit.full, FULL_TEXT_FILE)));
 
       const title = draft.title || defaultTitle(repo);
       const issue = await createIssue(repo, {
@@ -391,18 +408,21 @@ async function doneHandler(ctx) {
     } catch (err) {
       console.error(err);
       results.push(`${repo}: error — ${err.message}`);
+      failedTargets.push(repo);
     }
   }
   const cards = [];
   for (const list of trelloLists) {
     const name = `📋 ${listName(list)}`;
     try {
+      const fit = fitText(draft.text.join("\n\n"), TRELLO_DESC_MAX);
       const card = await createCard(list, {
         name: draft.title || defaultTitle(listName(list)),
-        desc: draft.text.join("\n\n"),
+        desc: fit.text,
       });
       const failed = [];
-      for (const f of draft.files) {
+      const files = fit.full ? [...draft.files, { buffer: fit.full, filename: FULL_TEXT_FILE }] : draft.files;
+      for (const f of files) {
         try {
           await attachToCard(card.id, f.buffer, f.filename);
         } catch (err) {
@@ -415,9 +435,18 @@ async function doneHandler(ctx) {
     } catch (err) {
       console.error(err);
       results.push(`${name}: error — ${err.message}`);
+      failedTargets.push(list);
     }
   }
 
+  // A target that failed keeps the draft (the text was lost with it, owner 2026-11-03): "Done" again tries only those
+  if (failedTargets.length) {
+    draft.selectedRepos = new Set(failedTargets);
+    await ctx.reply(results.join("\n"));
+    return ctx.reply(`The draft is kept for: ${targetNames(draft.selectedRepos)}. Press "${BTN_DONE}" to try again.`, {
+      reply_markup: doneInlineKeyboard(),
+    });
+  }
   clearDraft(ctx.chat.id);
 
   const keyboard = new InlineKeyboard();
@@ -442,8 +471,10 @@ async function commentDoneHandler(ctx, draft) {
   if (!draftHasContent(draft)) {
     return ctx.reply("Nothing to add yet — send text, a photo, a video, a file or voice first.");
   }
-  const parts = [...draft.text];
+  const fit = fitText(draft.text.join("\n\n"), GITHUB_BODY_MAX);
+  const parts = fit.text ? [fit.text] : [];
   try {
+    if (fit.full) parts.push(attachmentMarkdown({ filename: FULL_TEXT_FILE }, await uploadAttachment(splitRepo(repo).repo, fit.full, FULL_TEXT_FILE)));
     for (const f of draft.files) {
       parts.push(attachmentMarkdown(f, await uploadAttachment(splitRepo(repo).repo, f.buffer, f.filename)));
     }
@@ -594,7 +625,9 @@ bot.on("message:voice", async (ctx) => {
   try {
     const text = await transcribeVoice(buffer, "voice.ogg");
     if (!text) return ctx.reply("Could not transcribe the voice message.");
-    await ctx.reply(`Transcribed: ${text}`);
+    // In parts: over Telegram's 4096 the reply threw here and the transcript never reached the draft (owner 2026-11-03)
+    const shown = `Transcribed: ${text}`;
+    for (let i = 0; i < shown.length; i += TG_MESSAGE_MAX) await ctx.reply(shown.slice(i, i + TG_MESSAGE_MAX));
     return handleTextInput(ctx, draft, text, started);
   } catch (err) {
     console.error(err);
@@ -695,10 +728,16 @@ bot.on(
 function splitTitleBody(text) {
   const firstLine = text.split("\n")[0];
   const rest = text.slice(firstLine.length).trim();
-  if (rest) return { title: firstLine.trim(), body: rest };
-  const m = text.match(/^(.+?[.!?])(\s|$)/);
-  if (m) return { title: m[1].trim(), body: text.slice(m[0].length).trim() };
-  return { title: text.trim(), body: "" };
+  let parts;
+  if (rest) parts = { title: firstLine.trim(), body: rest };
+  else {
+    const m = text.match(/^(.+?[.!?])(\s|$)/);
+    parts = m ? { title: m[1].trim(), body: text.slice(m[0].length).trim() } : { title: text.trim(), body: "" };
+  }
+  if (parts.title.length <= TITLE_MAX) return parts;
+  // GitHub refuses a title over 256 (a long transcript's first sentence: 422): a cut title, the whole text in the body
+  const cut = parts.title.lastIndexOf(" ", TITLE_MAX);
+  return { title: `${parts.title.slice(0, cut > 0 ? cut : TITLE_MAX)}…`, body: text.trim() };
 }
 
 function matchRepos(prefix) {
@@ -748,8 +787,9 @@ bot.on("chosen_inline_result", async (ctx) => {
   }
 });
 
+// The cause only: a BotError carries ctx, and with it the bot token, into the log
 bot.catch((err) => {
-  console.error("Bot error:", err);
+  console.error("Bot error:", err.error || err.message);
 });
 
 await bot.api.setMyCommands([
